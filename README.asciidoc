@@ -1,0 +1,12 @@
+= Xabber Websocket server
+
+You need GNU `make` and `git` in your PATH.
+
+To build and run the app, use the following command:
+
+[source,bash]
+$git clone https://github.com/redsolution/xabber-websocket.git
+$cd xabber-websocket
+$ make run
+
+Then point your xmpp client to http://yourserver:8080/websocket
