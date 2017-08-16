@@ -1,12 +1,9 @@
-= Xabber Websocket server
+= Xabber WebSocket server
 
-You need GNU `make` and `git` in your PATH.
+Xabber WebSocket is a WebSocket XMPP client interface. It is a standalone WebSocket connection manager
+that enables a web application like https://github.com/redsolution/xabber-web[Xabber for Web] to communicate
+with multiple different XMPP servers
 
-To build and run the app, use the following command:
+=== Online documentation
 
-[source,bash]
-$git clone https://github.com/redsolution/xabber-websocket.git
-$cd xabber-websocket
-$ make run
-
-Then point your xmpp client to http://yourserver:8080/websocket
+https://github.com/redsolution/xabber-websocket/wiki[Wiki]
