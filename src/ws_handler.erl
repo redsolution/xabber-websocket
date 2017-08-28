@@ -335,7 +335,7 @@ a_lookup(Host, Port, Timeout, Retries) ->
 to_host_port_list(#hostent{h_addr_list = AddrList}) ->
 	AddrList2 = lists:flatmap(
 		fun({Priority, Weight, Port, Host}) ->
-			[{Priority + 65536 - Weight + random:uniform(), Host, Port}];
+			[{Priority + 65536 - Weight + rand:uniform(), Host, Port}];
 			(_) ->
 				[]
 		end, AddrList),
