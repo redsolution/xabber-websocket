@@ -17,6 +17,7 @@
 -type(xmlel() :: #xmlel{}).
 
 -export([init/2]).
+-export([terminate/3]).
 -export([websocket_init/1]).
 -export([websocket_handle/2]).
 -export([websocket_info/2]).
@@ -42,6 +43,11 @@ init(Req, State) ->
 			end
 	end.
 
+terminate(_Arg0, _Arg1, _Arg2) ->
+	tcp_send(?STREAM_CLOSE, self()),
+	tcp_close(self()),
+	catch ets:delete(table_name(self())),
+	ok.
 
 websocket_init(State) ->
 	ets:new(table_name(self()), [named_table, protected, set, {keypos, 1}]),
@@ -167,21 +173,33 @@ tcp_upgrade_to_tls(Socket) ->
 	end.
 
 tcp_send(Packet,WSPid) ->
-	[{_, Socket}]= ets:lookup(table_name(WSPid), tcpsocket),
-	case Socket of
-		{sslsocket,_,_} ->
-			ok = ssl:send(Socket,Packet);
-		_ ->
-			ok = gen_tcp:send(Socket,Packet)
+	try ets:lookup(table_name(WSPid), tcpsocket) of
+		[] ->
+			skip;
+		[{_, Socket}] ->
+			case Socket of
+				{sslsocket,_,_} ->
+					ok = ssl:send(Socket,Packet);
+				_ ->
+					ok = gen_tcp:send(Socket,Packet)
+			end
+	catch
+		Exception:Reason -> {caught, Exception, Reason}
 	end.
 
 tcp_close(WSPid) ->
-	[{_, Socket}]= ets:lookup(table_name(WSPid), tcpsocket),
-	case Socket of
-		{sslsocket,_,_} ->
-			ssl:close(Socket);
-		_ ->
-			inet:close(Socket)
+	try ets:lookup(table_name(WSPid), tcpsocket) of
+		[] ->
+			skip;
+		[{_, Socket}] ->
+			case Socket of
+				{sslsocket,_,_} ->
+					ssl:close(Socket);
+				_ ->
+					inet:close(Socket)
+			end
+	catch
+		Exception:Reason -> {caught, Exception, Reason}
 	end,
 	to_xml_stream({xmppsrv, info, stop}).
 
@@ -208,6 +226,8 @@ xmlstream(Stream, WSPid) ->
 		{xmppsrv,in,Packet} ->
 			S = fxml_stream:parse(Stream, Packet),
 			xmlstream(S, WSPid);
+		{'$gen_event', true} ->
+			skip;
 		{'$gen_event', XMLStreamEl} ->
 			XMLStreamEl2 = case XMLStreamEl of
 							 {xmlstreamstart, _, Attrs} ->
@@ -257,8 +277,14 @@ xmlstream(Stream, WSPid) ->
 	end.
 
 to_xml_stream(Packet) ->
-	[{_, XmlSPid}]= ets:lookup(table_name(self()), xmlstreampid),
-	XmlSPid ! Packet.
+	try ets:lookup(table_name(self()), xmlstreampid) of
+	  []  ->
+		  skip;
+		[{_, XmlSPid}] ->
+			XmlSPid ! Packet
+	catch
+		Exception:Reason -> {caught, Exception, Reason}
+	end.
 
 table_name(Pid) ->
 	erlang:list_to_atom(lists:append("table", erlang:pid_to_list(Pid))).
