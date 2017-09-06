@@ -179,9 +179,9 @@ tcp_send(Packet,WSPid) ->
 		[{_, Socket}] ->
 			case Socket of
 				{sslsocket,_,_} ->
-					ok = ssl:send(Socket,Packet);
+					ssl:send(Socket,Packet);
 				_ ->
-					ok = gen_tcp:send(Socket,Packet)
+					gen_tcp:send(Socket,Packet)
 			end
 	catch
 		Exception:Reason -> {caught, Exception, Reason}

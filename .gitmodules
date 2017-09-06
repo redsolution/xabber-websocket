@@ -1,0 +1,3 @@
+[submodule "priv/client/client_files"]
+	path = priv/client/client_files
+	url = git://github.com/redsolution/xabber-web.git

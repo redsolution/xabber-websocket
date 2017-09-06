@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Xabber Web</title>
+    <meta charset="utf-8">
+    <link rel="shortcut icon" type="image/png" href="images/favicon.png"/>
+    <link rel="stylesheet" href="dist/xabber.min.css?v1.0.1">
+    <script src="dist/xabber.min.js?v1.0.1"></script>
+    <script>
+        require(['xabber'], function (xabber) {
+            xabber.configure({
+                CONNECTION_URL: 'ws://'+location.host+'/websocket',
+                LOG_LEVEL: 'WARN'
+            });
+            xabber.start();
+        });
+    </script>
+</head>
+
+<body>
+</body>
+
+</html>
