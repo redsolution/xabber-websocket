@@ -1,5 +1,4 @@
 -module(ws_handler).
--compile([{parse_transform, lager_transform}]).
 -include_lib("kernel/include/inet.hrl").
 
 -record(xmlel,

@@ -4,6 +4,34 @@ Xabber WebSocket is a WebSocket XMPP client interface. It is a standalone WebSoc
 that enables a web application like https://github.com/redsolution/xabber-web[Xabber for Web] to communicate
 with multiple different XMPP servers
 
+=== Build and run
+You need GNU `make` and `git` in your PATH.
+
+To build and run the app, use the following command:
+
+[source,bash]
+$ git clone https://github.com/redsolution/xabber-websocket.git
+$ cd xabber-websocket
+$ make run
+
+Then point your xmpp client to `ws://yourserver:8080/websocket`
+or you can use the embedded Xabber Web client on `http://yourserver:8080/client`
+
+=== Install and run
+If `make` is successful, archive `xabber_ws-NN.tar.gz` with an application  will be created
+in the `_rel/xabber_ws/` directory
+
+Copy the archive to your server and use the following command:
+
+[source,bash]
+$ mkdir xabber_ws
+$ tar -xvf xabber_ws-NN.tar.gz -C xabber_ws
+$ cd xabber_ws/bin
+$ ./xabber_ws start
+
+Then point your xmpp client to `ws://yourserver:8080/websocket`
+or you can use the embedded Xabber Web client on `http://yourserver:8080/client`
+
 === Online documentation
 
 https://github.com/redsolution/xabber-websocket/wiki[Wiki]

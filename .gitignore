@@ -3,4 +3,4 @@ _rel
 deps
 ebin
 *.d
-
+priv/client/client_files/*

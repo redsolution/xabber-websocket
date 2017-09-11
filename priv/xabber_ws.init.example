@@ -1,0 +1,79 @@
+#! /bin/bash
+
+### BEGIN INIT INFO
+# Provides:          xabber_ws
+# Required-Start:    $remote_fs $network $named $time
+# Required-Stop:     $remote_fs $network $named $time
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: Starts Xabber WebSocket Server
+# Description:       Starts Xabber WebSocket Server
+### END INIT INFO
+
+
+set -o errexit
+
+DIR=/opt/xabber_websocket_dir
+DAEMON="$DIR"/bin/xabber_ws
+USER=xabber_websoket_user
+
+test -x "$DAEMON" || {
+	echo "ERROR: xabber_ws not found: $DIR"
+	exit 1
+}
+getent passwd "$USER" >/dev/null || {
+	echo "ERROR: System user not found: $USER"
+	exit 2
+}
+
+export PATH="${PATH:+$PATH:}/usr/sbin:/sbin"
+
+case "$1" in
+  start)
+    test -x "$DAEMON" || exit 0
+    printf "%-50s" "Starting Xabber WebSocket Server..."
+    su - $USER -c "$DAEMON start > /dev/null 2>&1";
+
+    # wait for pid
+    for (( i=0; i<10; ++i )); do
+        OUT="$DAEMON pid";
+        if [ $? == 0 ]; then PID=$OUT; break; fi
+        sleep 1;
+    done
+
+    if [ -z "$PID" ]; then
+       printf "%s\n" "Fail"
+    else
+        printf "%s\n" "Ok"
+    fi
+    ;;
+  stop)
+    test -x "$DAEMON" || exit 0
+    printf "%-50s" "Stopping Xabber WebSocket Server..."
+    su - $USER -c "$DAEMON stop > /dev/null 2>&1";
+    if [ $? != 0 ]; then
+            printf "%s\n" "Node is not running!"
+        else
+            printf "%s\n" "Ok"
+    fi
+    ;;
+  status)
+    test -x "$DAEMON" || exit 0
+    printf "%-50s" "Checking Xabber WebSocket Server..."
+    su - $USER -c "$DAEMON pid > /dev/null 2>&1";
+    if [ $? != 0 ]; then
+        printf "%s\n" "Node is not running!"
+    else
+        printf "%s\n" "Ok"
+    fi
+    ;;
+  restart)
+    "$0" stop
+    "$0" start
+    ;;
+  *)
+    echo "Usage: $0 {start|stop|restart|status}"
+    exit 1
+esac
+
+exit 0
