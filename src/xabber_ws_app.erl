@@ -1,4 +1,3 @@
-%% @private
 -module(xabber_ws_app).
 -behaviour(application).
 

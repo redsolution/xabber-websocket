@@ -67,12 +67,12 @@ case "$1" in
         printf "%s\n" "Ok"
     fi
     ;;
-  restart)
+  reload)
     "$0" stop
     "$0" start
     ;;
   *)
-    echo "Usage: $0 {start|stop|restart|status}"
+    echo "Usage: $0 {start|stop|reload|status}"
     exit 1
 esac
 

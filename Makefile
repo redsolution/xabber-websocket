@@ -1,5 +1,5 @@
 PROJECT = xabber_ws
-PROJECT_DESCRIPTION = Websocket to XMPP server
+PROJECT_DESCRIPTION = Xabber Websocket server
 PROJECT_VERSION = 0.0.1dev001
 
 DEPS = cowlib cowboy p1_utils fast_xml lager
