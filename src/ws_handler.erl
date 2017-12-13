@@ -199,8 +199,7 @@ tcp_close(WSPid) ->
 			end
 	catch
 		Exception:Reason -> {caught, Exception, Reason}
-	end,
-	to_xml_stream({xmppsrv, info, stop}).
+	end.
 
 forward_connection_error_to_ws(_Source, Why) ->
 	WhyBin= erlang:atom_to_binary(Why, utf8),
