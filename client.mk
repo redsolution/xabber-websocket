@@ -12,10 +12,13 @@ client:
 	fi
 	@cd $(DEPS_DIR)/xabber_web && git pull -q origin master
 	@echo ". done."
-	@echo -n "Copying xmpp client files to 'priv' directory  ."
-	@mkdir -p priv/client/client_files
-	@cp -r $(DEPS_DIR)/xabber_web/dist priv/client/client_files/ && echo -n "."
-	@cp -r $(DEPS_DIR)/xabber_web/fonts priv/client/client_files/ && echo -n "."
-	@cp -r $(DEPS_DIR)/xabber_web/images priv/client/client_files/ && echo -n "."
-	@cp -r $(DEPS_DIR)/xabber_web/sounds priv/client/client_files/ && echo -n "."
+	@echo -n "Copying Xabber Web files to 'priv' directory  ."
+	@mkdir -p priv/client
+	@cp -r $(DEPS_DIR)/xabber_web/dist priv/client/ && echo -n "."
+	@cp -r $(DEPS_DIR)/xabber_web/fonts priv/client/ && echo -n "."
+	@cp -r $(DEPS_DIR)/xabber_web/images priv/client/ && echo -n "."
+	@cp -r $(DEPS_DIR)/xabber_web/sounds priv/client/ && echo -n "."
+	@cp -r $(DEPS_DIR)/xabber_web/manifest.json priv/client/ && echo -n "."
+	@cp -r $(DEPS_DIR)/xabber_web/firebase-messaging-sw.js priv/client/ && echo -n "."
+	@sed "s/CONNECTION_URL: ''/CONNECTION_URL: 'ws:\/\/'+location.host+'\/websocket'/g" $(DEPS_DIR)/xabber_web/example_index.html  > priv/client/index.html
 	@echo ". done."

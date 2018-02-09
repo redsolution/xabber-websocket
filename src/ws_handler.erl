@@ -8,6 +8,14 @@
 	children = [] :: [xmlel() | cdata()]
 }).
 
+-record(session,
+{
+	connstep = 0,
+	xmppserver,
+	tcpsocket,
+	xmlstream
+}).
+
 -type host_port() :: {inet:hostname(), inet:port_number()}.
 -type ip_port() :: {inet:ip_address(), inet:port_number()}.
 -type network_error() :: {error, inet:posix() | inet_res:res_error()}.
@@ -42,16 +50,15 @@ init(Req, State) ->
 			end
 	end.
 
-terminate(_Arg0, _Arg1, _Arg2) ->
-	tcp_send(?STREAM_CLOSE, self()),
-	tcp_close(self()),
-	catch ets:delete(table_name(self())),
+terminate(_Arg0, _Arg1, State) ->
+  tcp_send(?STREAM_CLOSE, State#session.tcpsocket),
+	tcp_close(State#session.tcpsocket),
+	fxml_stream:close(State#session.xmlstream),
 	ok.
 
-websocket_init(State) ->
-	ets:new(table_name(self()), [named_table, protected, set, {keypos, 1}]),
-	ets:insert(table_name(self()), {connstep, 0}),
-	{ok, State}.
+websocket_init(_State) ->
+	NewState = #session{},
+	{ok, NewState}.
 
 websocket_handle({text, Frame}, State) ->
 	X1=fxml_stream:parse_element(Frame),
@@ -59,15 +66,15 @@ websocket_handle({text, Frame}, State) ->
 	case Name of
 	  <<"open">> ->
 			{_,Server} = fxml:get_attr(<<"to">>, Attrs),
-			[{_,ConnStep}] = ets:lookup(table_name(self()), connstep),
 			if
-				ConnStep == 0 ->
-					ets:insert(table_name(self()), {xmppserver, Server}),
+				State#session.connstep == 0 ->
 					case init_session_to_xmpp_server(Server) of
-						{ok,connected} ->
-							ets:insert(table_name(self()), {connstep, 1}),
-							to_xml_stream({ws, info, open}),
-							{ok,State,hibernate};
+						{ok,connected, Socket} ->
+							tcp_send(<<"<stream:stream xmlns='jabber:client' to='",
+								Server/binary,"' version='1.0' xmlns:stream='http://etherx.jabber.org/streams' xml:lang='ru'>">>, Socket),
+							NewStream = fxml_stream:new(self()),
+              NewState = State#session{connstep = 1, xmppserver = Server, tcpsocket = Socket, xmlstream = NewStream},
+							{ok,NewState,hibernate};
 						{err, Source, Why} ->
 							forward_connection_error_to_ws(Source, Why),
 							{ok,State,hibernate};
@@ -75,15 +82,20 @@ websocket_handle({text, Frame}, State) ->
 							{stop, State}
 					end;
 				true ->
-					to_xml_stream({ws, info, open}),
-					{ok,State,hibernate}
+					fxml_stream:close(State#session.xmlstream),
+					NewStream = fxml_stream:new(self()),
+					Server = State#session.xmppserver,
+					tcp_send(<<"<stream:stream xmlns='jabber:client' to='",
+						Server/binary,"' version='1.0' xmlns:stream='http://etherx.jabber.org/streams' xml:lang='ru'>">>,State#session.tcpsocket),
+					NewState = State#session{ xmlstream = NewStream},
+					{ok, NewState, hibernate}
 			end;
 		<<"close">> ->
-			tcp_send(?STREAM_CLOSE, self()),
-			tcp_close(self()),
+			tcp_send(?STREAM_CLOSE, State#session.tcpsocket),
+			tcp_close(State#session.tcpsocket),
 			{stop,State};
 		_ ->
-			tcp_send(Frame, self()),
+			tcp_send(Frame, State#session.tcpsocket),
 			{ok,State,hibernate}
 	end;
 websocket_handle({ping, Payload}, State) ->
@@ -91,35 +103,87 @@ websocket_handle({ping, Payload}, State) ->
 websocket_handle(_Frame, State) ->
 	{ok, State, hibernate}.
 
-websocket_info({xmppsrv,reply, Packet}, State) ->
+websocket_info({reply, fromxmppsrv, Packet}, State) ->
 	{reply, {text, Packet}, State,hibernate};
 websocket_info({tcp, Socket, Packet}, State) ->
 	inet:setopts(Socket,	[{active,	once}]),
-	to_xml_stream({xmppsrv,in,Packet}),
-	{ok, State,hibernate};
+	Stream = fxml_stream:parse(State#session.xmlstream, Packet),
+	NewState = State#session{xmlstream = Stream},
+	{ok, NewState, hibernate};
 websocket_info({ssl, Socket, Packet}, State) ->
 	ssl:setopts(Socket,	[{active,	once}]),
-	to_xml_stream({xmppsrv,in,Packet}),
-	{ok, State,hibernate};
+	Stream = fxml_stream:parse(State#session.xmlstream, Packet),
+	NewState = State#session{xmlstream = Stream},
+	{ok, NewState, hibernate};
 websocket_info({tcp_closed, Socket}, State) ->
 	lager:info("tcp_socket: ~p connection closed",[Socket]),
-	to_xml_stream({xmppsrv, info, stop}),
 	{stop, State};
 websocket_info({ssl_closed, Socket}, State) ->
 	lager:info("ssl_socket: ~p connection closed",[Socket]),
-	to_xml_stream({xmppsrv, info, stop}),
 	{stop, State};
-websocket_info({start_tls, Socket}, State) ->
-	case tcp_upgrade_to_tls(Socket) of
-		{ok, tlsstart}->
-			{ok, State,hibernate};
-		{err, tls, _Why} ->
-			inet:close(Socket),
+websocket_info({start_tls}, State) ->
+	case tcp_upgrade_to_tls(State#session.tcpsocket) of
+		{ok, SSLSocket}->
+			fxml_stream:close(State#session.xmlstream),
+			NewStream = fxml_stream:new(self()),
+			Server = State#session.xmppserver,
+			tcp_send(<<"<stream:stream xmlns='jabber:client' to='",
+				Server/binary,"' version='1.0' xmlns:stream='http://etherx.jabber.org/streams' xml:lang='ru'>">>,SSLSocket),
+			NewState = State#session{connstep = 2, tcpsocket = SSLSocket, xmlstream = NewStream},
+			{ok, NewState, hibernate};
+		{err, _Why} ->
+			inet:close(State#session.tcpsocket),
 			{stop, State}
 	end;
-websocket_info({ws, info, stop, Why}, State) ->
+websocket_info({ws,stop, Why}, State) ->
 	lager:debug("web_socket closed: ~p",[Why]),
 	{stop, State};
+websocket_info({'$gen_event', XMLStreamEl}, State) ->
+	XMLStreamEl2 = case XMLStreamEl of
+									 {xmlstreamstart, _, Attrs} ->
+										 if
+											 State#session.connstep < 2 ->
+												 Attrs2 = [{<<"xmlns">>, <<"urn:ietf:params:xml:ns:xmpp-framing">>} |
+													 lists:keydelete(<<"xmlns">>, 1, lists:keydelete(<<"xmlns:stream">>, 1, Attrs))],
+												 {xmlstreamelement, #xmlel{name = <<"open">>, attrs = Attrs2}};
+											 true ->
+												 skip
+										 end;
+									 {xmlstreamelement, #xmlel{name=Name} = XMLel} ->
+										 XMLel2 = case Name of
+																<<"stream:features">> ->
+																	case fxml:get_subtag(XMLel, <<"starttls">>) of
+																		{xmlel,<<"starttls">>,_,_} ->
+																			tcp_send(<<"<starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>">>, State#session.tcpsocket),
+																		  skip;
+																		_ ->
+																			fxml:replace_tag_attr(<<"xmlns:stream">>, ?NS_STREAM, XMLel)
+																	end;
+																<<"stream:", _/binary>> ->
+																	fxml:replace_tag_attr(<<"xmlns:stream">>, ?NS_STREAM, XMLel);
+																<<"proceed">> ->
+																	self() ! {start_tls},
+																  skip;
+																_ ->
+																	XMLel
+															end,
+										 {xmlstreamelement , XMLel2};
+									 {xmlstreamend, _} ->
+										 {xmlstreamelement, #xmlel{name = <<"close">>,	attrs = [{<<"xmlns">>, <<"urn:ietf:params:xml:ns:xmpp-framing">>}]}};
+									 _ ->
+										 XMLStreamEl
+								 end,
+	case XMLStreamEl2 of
+		skip ->
+			skip;
+		{xmlstreamelement , skip} ->
+			skip;
+		{xmlstreamelement, El} ->
+			self() ! {reply, fromxmppsrv, fxml:element_to_binary(El)};
+		{_, Bin} ->
+			self() ! {reply, fromxmppsrv, Bin}
+	end,
+	{ok, State, hibernate};
 websocket_info(Info, State) ->
 	lager:debug("web_socket closed ~p", [Info]),
 	{stop, State}.
@@ -131,19 +195,13 @@ init_session_to_xmpp_server(Server) ->
 			case  tcp_connect(AddrPortList) of
 				{ok, Socket} ->
 					lager:info("tcp_socket:~p Connected to XMPP server ~p",[Socket,Server]),
-					WSPid = self(),
-					ets:insert(table_name(WSPid), {tcpsocket, Socket}),
-					S1= fxml_stream:new(self()),
-					XmlSPid = spawn(fun() -> xmlstream(S1, WSPid) end),
-					ets:insert(table_name(WSPid), {xmlstreampid, XmlSPid}),
-					fxml_stream:change_callback_pid(S1,XmlSPid),
-					{ok,connected};
+					{ok,connected, Socket};
 				{error, Why} ->
-					lager:info("ERROR: Can not connect to ~p : ~p ",[Server,Why]),
+					lager:error("ERROR: Can not connect to ~p : ~p ",[Server,Why]),
 					{err,tcp_connect, Why}
 			end;
 		{error, Why} ->
-			lager:info("ERROR: Can not resolve domain name ~p : ~p",[Server,Why]),
+			lager:error("ERROR: Can not resolve domain name ~p : ~p",[Server,Why]),
 			{err, dns, 'dns-error'}
 	end.
 
@@ -162,130 +220,37 @@ tcp_upgrade_to_tls(Socket) ->
 	case ssl:connect(Socket, []) of
 		{ok, SSLSocket} ->
 			lager:info("tcp_socket ~p upgrade to TLS ~p~n", [Socket,SSLSocket]),
-			ets:insert(table_name(self()), {tcpsocket, SSLSocket}),
-			ets:insert(table_name(self()), {connstep, 2}),
-			to_xml_stream({ws, info, open}),
-			{ok, tlsstart};
+			{ok, SSLSocket};
 		{error, Why} ->
-			lager:info("ERROR TCP socket not upgrade to TLS ~p~n",[Why]),
-			{err, tls, 'tls-error'}
+			lager:error("ERROR TCP socket not upgrade to TLS ~p~n",[Why]),
+			{err, Why}
 	end.
 
-tcp_send(Packet,WSPid) ->
-	try ets:lookup(table_name(WSPid), tcpsocket) of
-		[] ->
-			skip;
-		[{_, Socket}] ->
-			case Socket of
-				{sslsocket,_,_} ->
-					ssl:send(Socket,Packet);
-				_ ->
-					gen_tcp:send(Socket,Packet)
-			end
-	catch
-		Exception:Reason -> {caught, Exception, Reason}
+tcp_send(Packet, Socket) ->
+	case Socket of
+		{sslsocket,_,_} ->
+			ssl:send(Socket,Packet);
+		_ ->
+			gen_tcp:send(Socket,Packet)
 	end.
 
-tcp_close(WSPid) ->
-	try ets:lookup(table_name(WSPid), tcpsocket) of
-		[] ->
-			skip;
-		[{_, Socket}] ->
-			case Socket of
-				{sslsocket,_,_} ->
-					ssl:close(Socket);
-				_ ->
-					inet:close(Socket)
-			end
-	catch
-		Exception:Reason -> {caught, Exception, Reason}
+
+tcp_close(Socket) ->
+	case Socket of
+		{sslsocket,_,_} ->
+			ssl:close(Socket);
+		_ ->
+			inet:close(Socket)
 	end.
+
 
 forward_connection_error_to_ws(_Source, Why) ->
 	WhyBin= erlang:atom_to_binary(Why, utf8),
-	self() ! {xmppsrv,reply, <<"<stream:error xmlns:stream='http://etherx.jabber.org/streams'><",
+	self() ! {reply, fromxmppsrv, <<"<stream:error xmlns:stream='http://etherx.jabber.org/streams'><",
 		WhyBin/binary," xmlns='urn:ietf:params:xml:ns:xmpp-streams'/>",
 		"</stream:error>">>},
-	self() ! {xmppsrv,reply, ?WS_CLOSE},
-	self() ! {ws, info, stop, Why}.
-
-
-xmlstream(Stream, WSPid) ->
-	receive
-		{ws, info, open} ->
-			fxml_stream:close(Stream),
-			S= fxml_stream:new(self()),
-			[{_, Server}]= ets:lookup(table_name(WSPid), xmppserver),
-			tcp_send(<<"<stream:stream xmlns='jabber:client' to='",
-				Server/binary,"' version='1.0' xmlns:stream='http://etherx.jabber.org/streams' xml:lang='ru'>">>,WSPid),
-			xmlstream(S, WSPid);
-		{xmppsrv, info, stop} ->
-			fxml_stream:close(Stream);
-		{xmppsrv,in,Packet} ->
-			S = fxml_stream:parse(Stream, Packet),
-			xmlstream(S, WSPid);
-		{'$gen_event', true} ->
-			skip;
-		{'$gen_event', XMLStreamEl} ->
-			XMLStreamEl2 = case XMLStreamEl of
-							 {xmlstreamstart, _, Attrs} ->
-								 [{_,ConnStep}] = ets:lookup(table_name(WSPid), connstep),
-								 if
-									 ConnStep < 2 ->
-										 Attrs2 = [{<<"xmlns">>, <<"urn:ietf:params:xml:ns:xmpp-framing">>} |
-											 lists:keydelete(<<"xmlns">>, 1, lists:keydelete(<<"xmlns:stream">>, 1, Attrs))],
-										 {xmlstreamelement, #xmlel{name = <<"open">>, attrs = Attrs2}};
-									 true ->
-										 skip
-								 end;
-							 {xmlstreamelement, #xmlel{name=Name} = XMLel} ->
-								 XMLel2 = case Name of
-												 <<"stream:features">> ->
-													 case fxml:get_subtag(XMLel, <<"starttls">>) of
-														 {xmlel,<<"starttls">>,_,_} ->
-															 tcp_send(<<"<starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>">>, WSPid),
-															 xmlstream(Stream, WSPid);
-														 _ ->
-															 fxml:replace_tag_attr(<<"xmlns:stream">>, ?NS_STREAM, XMLel)
-													 end;
-												 <<"stream:", _/binary>> ->
-													 fxml:replace_tag_attr(<<"xmlns:stream">>, ?NS_STREAM, XMLel);
-												 <<"proceed">> ->
-													 [{_, Socket}]= ets:lookup(table_name(WSPid), tcpsocket),
-													 WSPid ! {start_tls, Socket},
-													 xmlstream(Stream, WSPid);
-												 _ ->
-													 XMLel
-											 end,
-								 {xmlstreamelement , XMLel2};
-							 {xmlstreamend, _} ->
-								 {xmlstreamelement, #xmlel{name = <<"close">>,	attrs = [{<<"xmlns">>, <<"urn:ietf:params:xml:ns:xmpp-framing">>}]}};
-							 _ ->
-								 XMLStreamEl
-						 end,
-			case XMLStreamEl2 of
-				skip ->
-					xmlstream(Stream, WSPid);
-				{xmlstreamelement, El} ->
-					WSPid ! {xmppsrv,reply, fxml:element_to_binary(El)};
-				{_, Bin} ->
-					WSPid ! {xmppsrv,reply, Bin}
-			end,
-			xmlstream(Stream, WSPid)
-	end.
-
-to_xml_stream(Packet) ->
-	try ets:lookup(table_name(self()), xmlstreampid) of
-	  []  ->
-		  skip;
-		[{_, XmlSPid}] ->
-			XmlSPid ! Packet
-	catch
-		Exception:Reason -> {caught, Exception, Reason}
-	end.
-
-table_name(Pid) ->
-	erlang:list_to_atom(lists:append("table", erlang:pid_to_list(Pid))).
+	self() ! {reply, fromxmppsrv, ?WS_CLOSE},
+	self() ! {ws, stop, Why}.
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%

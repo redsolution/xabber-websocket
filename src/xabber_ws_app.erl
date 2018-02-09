@@ -19,7 +19,8 @@ start(_Type, _Args) ->
 		{'_', [
 			{WS_path, ws_handler, []},
 			{Client_path, client_handler, []},
-			{Client_path ++ "/[...]", cowboy_static, {priv_dir, xabber_ws, "client/client_files"}}
+			{Client_path ++ "/[...]", cowboy_static, {priv_dir, xabber_ws, "client/"}},
+			{"/firebase-messaging-sw.js", cowboy_static, {priv_file, xabber_ws, "client/firebase-messaging-sw.js"}}
 		]}
 	]),
 	{ok, _} = cowboy:start_clear(http, [{port, Port}], #{
