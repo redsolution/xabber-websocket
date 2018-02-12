@@ -32,6 +32,8 @@
 
 -define(NS_STREAM, <<"http://etherx.jabber.org/streams">>).
 -define(WS_CLOSE, <<"<close xmlns='urn:ietf:params:xml:ns:xmpp-framing'/>">>).
+-define(STREAM_START(Server), <<"<stream:stream xmlns='jabber:client' to='",Server/binary,
+	"' version='1.0' xmlns:stream='http://etherx.jabber.org/streams' xml:lang='en'>">>).
 -define(STREAM_CLOSE, <<"</stream:stream>">>).
 -define(WS_TIMEOUT, 300000).
 
@@ -51,10 +53,19 @@ init(Req, State) ->
 	end.
 
 terminate(_Arg0, _Arg1, State) ->
-  tcp_send(?STREAM_CLOSE, State#session.tcpsocket),
-	tcp_close(State#session.tcpsocket),
-	fxml_stream:close(State#session.xmlstream),
+	case State#session.tcpsocket of
+		undefined -> undefined;
+		_ ->
+			tcp_send(?STREAM_CLOSE, State#session.tcpsocket),
+			tcp_close(State#session.tcpsocket)
+  end,
+	case State#session.xmlstream of
+		undefined -> undefined;
+		_ ->
+			fxml_stream:close(State#session.xmlstream)
+	end,
 	ok.
+
 
 websocket_init(_State) ->
 	NewState = #session{},
@@ -70,8 +81,7 @@ websocket_handle({text, Frame}, State) ->
 				State#session.connstep == 0 ->
 					case init_session_to_xmpp_server(Server) of
 						{ok,connected, Socket} ->
-							tcp_send(<<"<stream:stream xmlns='jabber:client' to='",
-								Server/binary,"' version='1.0' xmlns:stream='http://etherx.jabber.org/streams' xml:lang='ru'>">>, Socket),
+							tcp_send(?STREAM_START(Server), Socket),
 							NewStream = fxml_stream:new(self()),
               NewState = State#session{connstep = 1, xmppserver = Server, tcpsocket = Socket, xmlstream = NewStream},
 							{ok,NewState,hibernate};
@@ -85,8 +95,7 @@ websocket_handle({text, Frame}, State) ->
 					fxml_stream:close(State#session.xmlstream),
 					NewStream = fxml_stream:new(self()),
 					Server = State#session.xmppserver,
-					tcp_send(<<"<stream:stream xmlns='jabber:client' to='",
-						Server/binary,"' version='1.0' xmlns:stream='http://etherx.jabber.org/streams' xml:lang='ru'>">>,State#session.tcpsocket),
+					tcp_send(?STREAM_START(Server),State#session.tcpsocket),
 					NewState = State#session{ xmlstream = NewStream},
 					{ok, NewState, hibernate}
 			end;
@@ -127,8 +136,7 @@ websocket_info({start_tls}, State) ->
 			fxml_stream:close(State#session.xmlstream),
 			NewStream = fxml_stream:new(self()),
 			Server = State#session.xmppserver,
-			tcp_send(<<"<stream:stream xmlns='jabber:client' to='",
-				Server/binary,"' version='1.0' xmlns:stream='http://etherx.jabber.org/streams' xml:lang='ru'>">>,SSLSocket),
+			tcp_send(?STREAM_START(Server),SSLSocket),
 			NewState = State#session{connstep = 2, tcpsocket = SSLSocket, xmlstream = NewStream},
 			{ok, NewState, hibernate};
 		{err, _Why} ->
@@ -147,7 +155,7 @@ websocket_info({'$gen_event', XMLStreamEl}, State) ->
 													 lists:keydelete(<<"xmlns">>, 1, lists:keydelete(<<"xmlns:stream">>, 1, Attrs))],
 												 {xmlstreamelement, #xmlel{name = <<"open">>, attrs = Attrs2}};
 											 true ->
-												 skip
+												 {xmlstreamelement , skip}
 										 end;
 									 {xmlstreamelement, #xmlel{name=Name} = XMLel} ->
 										 XMLel2 = case Name of
@@ -174,8 +182,6 @@ websocket_info({'$gen_event', XMLStreamEl}, State) ->
 										 XMLStreamEl
 								 end,
 	case XMLStreamEl2 of
-		skip ->
-			skip;
 		{xmlstreamelement , skip} ->
 			skip;
 		{xmlstreamelement, El} ->
@@ -192,12 +198,13 @@ websocket_info(Info, State) ->
 init_session_to_xmpp_server(Server) ->
 	case dns_resolve(binary_to_list(Server)) of
 		{ok, AddrPortList} ->
-			case  tcp_connect(AddrPortList) of
-				{ok, Socket} ->
-					lager:info("tcp_socket:~p Connected to XMPP server ~p",[Socket,Server]),
+			case  tcp_connect(AddrPortList, []) of
+				{ok, Address, Port, Socket} ->
+					lager:info("tcp_socket:~p Connected to  ~s (~s:~p)",[Socket, Server, inet_parse:ntoa(Address), Port ]),
 					{ok,connected, Socket};
 				{error, Why} ->
-					lager:error("ERROR: Can not connect to ~p : ~p ",[Server,Why]),
+					lager:error("ERROR: Can not connect to ~s~p: ~p ",[Server,
+						[inet_parse:ntoa(A)++":"++integer_to_list(P) || {A,P} <- AddrPortList],Why]),
 					{err,tcp_connect, Why}
 			end;
 		{error, Why} ->
@@ -205,15 +212,15 @@ init_session_to_xmpp_server(Server) ->
 			{err, dns, 'dns-error'}
 	end.
 
-tcp_connect([]) ->
-	{error, 'server-unreachable'};
-tcp_connect([{Address, Port} | AddrPortList ]) ->
+tcp_connect([], Err) ->
+	{error, Err};
+tcp_connect([{Address, Port} | AddrPortList ], _Err) ->
 	SocketOpts = [binary, {active, once}, {reuseaddr, true}, {nodelay, true}, {keepalive, true}],
 	case gen_tcp:connect(Address, Port, SocketOpts) of
 		{ok, Socket} ->
-			{ok, Socket};
-		{error, _Why} ->
-			tcp_connect(AddrPortList)
+			{ok, Address, Port, Socket};
+		{error, Why} ->
+			tcp_connect(AddrPortList, Why)
 	end.
 
 tcp_upgrade_to_tls(Socket) ->
@@ -229,18 +236,18 @@ tcp_upgrade_to_tls(Socket) ->
 tcp_send(Packet, Socket) ->
 	case Socket of
 		{sslsocket,_,_} ->
-			ssl:send(Socket,Packet);
+			catch ssl:send(Socket,Packet);
 		_ ->
-			gen_tcp:send(Socket,Packet)
+			catch gen_tcp:send(Socket,Packet)
 	end.
 
 
 tcp_close(Socket) ->
 	case Socket of
 		{sslsocket,_,_} ->
-			ssl:close(Socket);
+			catch ssl:close(Socket);
 		_ ->
-			inet:close(Socket)
+			catch inet:close(Socket)
 	end.
 
 
