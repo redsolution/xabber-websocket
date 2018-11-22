@@ -148,39 +148,44 @@ websocket_info({ws,stop, Why}, State) ->
 	{stop, State};
 websocket_info({'$gen_event', XMLStreamEl}, State) ->
 	XMLStreamEl2 = case XMLStreamEl of
-									 {xmlstreamstart, _, Attrs} ->
-										 if
-											 State#session.connstep < 2 ->
-												 Attrs2 = [{<<"xmlns">>, <<"urn:ietf:params:xml:ns:xmpp-framing">>} |
-													 lists:keydelete(<<"xmlns">>, 1, lists:keydelete(<<"xmlns:stream">>, 1, Attrs))],
-												 {xmlstreamelement, #xmlel{name = <<"open">>, attrs = Attrs2}};
-											 true ->
-												 {xmlstreamelement , skip}
-										 end;
-									 {xmlstreamelement, #xmlel{name=Name} = XMLel} ->
-										 XMLel2 = case Name of
-																<<"stream:features">> ->
-																	case fxml:get_subtag(XMLel, <<"starttls">>) of
-																		{xmlel,<<"starttls">>,_,_} ->
-																			tcp_send(<<"<starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>">>, State#session.tcpsocket),
-																		  skip;
-																		_ ->
-																			fxml:replace_tag_attr(<<"xmlns:stream">>, ?NS_STREAM, XMLel)
-																	end;
-																<<"stream:", _/binary>> ->
-																	fxml:replace_tag_attr(<<"xmlns:stream">>, ?NS_STREAM, XMLel);
-																<<"proceed">> ->
-																	self() ! {start_tls},
-																  skip;
-																_ ->
-																	XMLel
-															end,
-										 {xmlstreamelement , XMLel2};
-									 {xmlstreamend, _} ->
-										 {xmlstreamelement, #xmlel{name = <<"close">>,	attrs = [{<<"xmlns">>, <<"urn:ietf:params:xml:ns:xmpp-framing">>}]}};
-									 _ ->
-										 XMLStreamEl
-								 end,
+		{xmlstreamstart, _, Attrs} ->
+			if
+				State#session.connstep < 2 ->
+					Attrs2 = [{<<"xmlns">>, <<"urn:ietf:params:xml:ns:xmpp-framing">>} |
+							  lists:keydelete(<<"xmlns">>, 1, lists:keydelete(<<"xmlns:stream">>, 1, Attrs))],
+					{xmlstreamelement, #xmlel{name = <<"open">>, attrs = Attrs2}};
+				true ->
+					{xmlstreamelement , skip}
+			end;
+		{xmlstreamelement, #xmlel{name=Name} = XMLel} ->
+			XMLel2 = case Name of
+				<<"stream:features">> ->
+					case fxml:get_subtag(XMLel, <<"starttls">>) of
+						{xmlel,<<"starttls">>,_,_} ->
+							tcp_send(<<"<starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>">>, State#session.tcpsocket),
+							skip;
+						_ ->
+							fxml:replace_tag_attr(<<"xmlns:stream">>, ?NS_STREAM, XMLel)
+					end;
+				<<"stream:", _/binary>> ->
+					fxml:replace_tag_attr(<<"xmlns:stream">>, ?NS_STREAM, XMLel);
+				<<"proceed">> ->
+					self() ! {start_tls},
+					skip;
+				_ ->
+                    case fxml:get_tag_attr_s(<<"xmlns">>, XMLel) of
+                        <<"">> ->
+                            fxml:replace_tag_attr(<<"xmlns">>, <<"jabber:client">>, XMLel);
+                        _ ->
+                            XMLel
+                    end
+			end,
+			{xmlstreamelement , XMLel2};
+		{xmlstreamend, _} ->
+			{xmlstreamelement, #xmlel{name = <<"close">>,	attrs = [{<<"xmlns">>, <<"urn:ietf:params:xml:ns:xmpp-framing">>}]}};
+			_ ->
+				XMLStreamEl
+	end,
 	case XMLStreamEl2 of
 		{xmlstreamelement , skip} ->
 			skip;
