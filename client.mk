@@ -20,5 +20,5 @@ client:
 	@cp -r $(DEPS_DIR)/xabber_web/sounds priv/client/ && echo -n "."
 	@cp -r $(DEPS_DIR)/xabber_web/manifest.json priv/client/ && echo -n "."
 	@cp -r $(DEPS_DIR)/xabber_web/firebase-messaging-sw.js priv/client/ && echo -n "."
-	@sed "s/CONNECTION_URL: ''/CONNECTION_URL: 'ws:\/\/'+location.host+'\/websocket'/g" $(DEPS_DIR)/xabber_web/example_index.html  > priv/client/index.html
+	@sed "s/CONNECTION_URL: ''/CONNECTION_URL: (location.protocol == 'https:' ? 'wss:' : 'ws:')+'\/\/'+location.host+'\/websocket'/g" $(DEPS_DIR)/xabber_web/example_index.html  > priv/client/index.html
 	@echo ". done."
