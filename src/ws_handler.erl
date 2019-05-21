@@ -79,17 +79,24 @@ websocket_handle({text, Frame}, State) ->
 			{_,Server} = fxml:get_attr(<<"to">>, Attrs),
 			if
 				State#session.connstep == 0 ->
-					case init_session_to_xmpp_server(Server) of
-						{ok,connected, Socket} ->
-							tcp_send(?STREAM_START(Server), Socket),
-							NewStream = fxml_stream:new(self()),
-              NewState = State#session{connstep = 1, xmppserver = Server, tcpsocket = Socket, xmlstream = NewStream},
-							{ok,NewState,hibernate};
-						{err, Source, Why} ->
-							forward_connection_error_to_ws(Source, Why),
-							{ok,State,hibernate};
+					case check_access(Server) of
+						<<"allow">> ->
+							case init_session_to_xmpp_server(Server) of
+								{ok,connected, Socket} ->
+									tcp_send(?STREAM_START(Server), Socket),
+									NewStream = fxml_stream:new(self()),
+									NewState = State#session{connstep = 1, xmppserver = Server, tcpsocket = Socket, xmlstream = NewStream},
+									{ok,NewState,hibernate};
+								{err, Source, Why} ->
+									forward_connection_error_to_ws(Source, Why),
+									{ok,State,hibernate};
+								_ ->
+									{stop, State}
+							end;
 						_ ->
-							{stop, State}
+							lager:warning("accessrules: Not allowed server: ~p", [Server]),
+							forward_connection_error_to_ws(accessrules, 'not-allowed-server'),
+							{ok,State,hibernate}
 					end;
 				true ->
 					fxml_stream:close(State#session.xmlstream),
@@ -263,6 +270,43 @@ forward_connection_error_to_ws(_Source, Why) ->
 		"</stream:error>">>},
 	self() ! {reply, fromxmppsrv, ?WS_CLOSE},
 	self() ! {ws, stop, Why}.
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% Access rules                        %%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+
+check_access(Server) ->
+	Def_rule = case application:get_env(xabber_ws, allow_all, true) of
+							 true -> <<"allow">>;
+							 _ -> <<"deny">>
+						 end,
+	ACL_file_path = filename:join([code:root_dir(), "config", "accessrules"]),
+	case file:read_file(ACL_file_path) of
+		{ok,<<>>} -> Def_rule;
+		{ok, Binary} ->
+			{ok, MP} = re:compile("[#|%].*\n"),
+			Binary2 = re:replace(Binary,MP,"\n",[{return,binary},global]),
+			ACL = lists:filtermap(
+				fun(X) -> case string:lexemes(string:lowercase(X)," ") of
+										[] -> false;
+										[W1, W2] ->
+										  {true, {W1, W2}};
+										_ ->
+											lager:error("accessrules: Wrong record in accessrules: ~s",[X]),
+											false
+										end
+				end,
+				binary:split(Binary2,<<"\n">>,[global])),
+			case lists:keyfind(Server, 2, ACL) of
+				{Rule, _ } -> Rule;
+				_ -> Def_rule
+			end;
+		{error, Reason} ->
+			lager:error("accessrules: File read error: ~p",[Reason]),
+			Def_rule
+	end.
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%

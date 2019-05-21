@@ -1,0 +1,8 @@
+## Access rules
+## Default action is set in xabber_ws.config. Set 'allow_all' parameter to true or false (restart required).
+## New rules take effect without restarting server.
+## Rule examples:
+##  rule      server(xmpp domain)
+## -----------------------------
+##  allow     myserver.com
+##  deny      alienserver.com
