@@ -38,21 +38,24 @@
 -define(WS_TIMEOUT, 300000).
 
 init(Req, State) ->
-  case cowboy_req:parse_header(<<"sec-websocket-protocol">>, Req) of
-    undefined ->
-      {stop, Req, State};
-    Subprotocols ->
-      case lists:member(<<"xmpp">>, Subprotocols) of
-        true ->
-          Req2 = cowboy_req:set_resp_header(<<"sec-websocket-protocol">>,
-            <<"xmpp">>, Req),
-          {cowboy_websocket, Req2, State,#{idle_timeout => application:get_env(xabber_ws, ws_timeout, ?WS_TIMEOUT)}};
-        false ->
-          {stop, Req, State}
-      end
+  IsXMPPClient = case cowboy_req:parse_header(<<"sec-websocket-protocol">>, Req) of
+                   undefined ->
+                     undefined;
+                   SubProtocols ->
+                     lists:member(<<"xmpp">>, SubProtocols)
+                 end,
+  case IsXMPPClient of
+    true ->
+      Req2 = cowboy_req:set_resp_header(<<"sec-websocket-protocol">>, <<"xmpp">>, Req),
+      {cowboy_websocket, Req2, State,#{idle_timeout => application:get_env(xabber_ws, ws_timeout, ?WS_TIMEOUT)}};
+     _ ->
+       Req2 = cowboy_req:reply(400, #{<<"content-type">> => <<"text/plain">>},
+         <<"unsupported WebSocket protocol">>, Req),
+       {ok, Req2, State}
   end.
 
-terminate(_Arg0, _Arg1, State) ->
+
+terminate(_Arg0, _Arg1, State) when is_record(State, session)->
   case State#session.tcpsocket of
     undefined -> undefined;
     _ ->
@@ -64,6 +67,8 @@ terminate(_Arg0, _Arg1, State) ->
     _ ->
       fxml_stream:close(State#session.xmlstream)
   end,
+  ok;
+terminate(_Arg0, _Arg1, _State) ->
   ok.
 
 
