@@ -84,7 +84,7 @@ websocket_handle({text, Frame}, State) ->
       {_,Server} = fxml:get_attr(<<"to">>, Attrs),
       if
         State#session.connstep == 0 ->
-          case check_access(Server) of
+          case check_server(Server) of
             <<"allow">> ->
               case init_session_to_xmpp_server(Server) of
                 {ok,connected, Socket} ->
@@ -99,8 +99,8 @@ websocket_handle({text, Frame}, State) ->
                   {stop, State}
               end;
             _ ->
-              lager:warning("accessrules: Not allowed server: ~p", [Server]),
-              forward_connection_error_to_ws(accessrules, 'not-allowed-server'),
+              lager:warning("accessrules: Not allowed domain: ~p", [Server]),
+              forward_connection_error_to_ws(accessrules, 'not-allowed-domain'),
               {ok,State,hibernate}
           end;
         true ->
@@ -281,6 +281,14 @@ forward_connection_error_to_ws(_Source, Why) ->
 %%% Access rules                        %%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
+check_server(Server) ->
+  %% domain names consisting only of numbers and dots are not allowed
+  try binary_to_integer(binary:replace(Server,<<$.>>,<<>>)) of
+    _ ->
+      <<"deny">>
+  catch _:_ ->
+    check_access(Server)
+  end.
 
 check_access(Server) ->
   Def_rule = case application:get_env(xabber_ws, allow_all, true) of
@@ -399,10 +407,7 @@ to_host_port_list(#hostent{h_addr_list = AddrList}) ->
 -spec to_addr_port_list(inet:hostent(), inet:port_number()) ->
   {ok, [ip_port()]} | {error, nxdomain}.
 to_addr_port_list(#hostent{h_addr_list = AddrList}, Port) ->
-  AddrPortList = lists:flatmap(
-    fun(Addr) ->
-        [{Addr, Port}]
-    end, AddrList),
+  AddrPortList = lists:map(fun(Addr) -> {Addr, Port} end, AddrList),
   case AddrPortList of
     [] -> {error, nxdomain};
     _ -> {ok, AddrPortList}
