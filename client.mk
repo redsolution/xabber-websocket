@@ -1,7 +1,7 @@
 all:: client
 rel:: client
 DEPS_DIR ?= $(CURDIR)/deps
-C_VERSION ?= master
+C_VERSION ?= develop
 
 client:
 	@echo -n "Getting Xabber Web client ..."
@@ -16,12 +16,8 @@ client:
 	@echo -n "Copying Xabber Web files to 'priv' directory  ."
 	@mkdir -p priv/client
 	@cp -r $(DEPS_DIR)/xabber_web/dist priv/client/ && echo -n "."
-	@cp -r $(DEPS_DIR)/xabber_web/fonts priv/client/ && echo -n "."
-	@cp -r $(DEPS_DIR)/xabber_web/images priv/client/ && echo -n "."
-	@cp -r $(DEPS_DIR)/xabber_web/sounds priv/client/ && echo -n "."
-	@cp -r $(DEPS_DIR)/xabber_web/translations priv/client/ && echo -n "."
+	@cp -r $(DEPS_DIR)/xabber_web/assets priv/client/ && echo -n "."
 	@cp -r $(DEPS_DIR)/xabber_web/manifest.json priv/client/ && echo -n "."
-	@cp -r $(DEPS_DIR)/xabber_web/firebase-messaging-sw.js priv/client/ && echo -n "."
 	@cp -r $(DEPS_DIR)/xabber_web/background-images.xml priv/client/ && echo -n "."
 	@cp -r $(DEPS_DIR)/xabber_web/background-patterns.xml priv/client/ && echo -n "."
 	@sed "s/CONNECTION_URL: ''/CONNECTION_URL: (location.protocol == 'https:' ? 'wss:' : 'ws:')+'\/\/'+location.host+'\/websocket'/g" $(DEPS_DIR)/xabber_web/example_index.html  > priv/client/index.html
