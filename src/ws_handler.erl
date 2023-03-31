@@ -35,7 +35,8 @@
 -define(STREAM_START(Server), <<"<stream:stream xmlns='jabber:client' to='",Server/binary,
   "' version='1.0' xmlns:stream='http://etherx.jabber.org/streams' xml:lang='en'>">>).
 -define(STREAM_CLOSE, <<"</stream:stream>">>).
--define(WS_TIMEOUT, 300000).
+-define(WS_TIMEOUT, 60000).
+-define(WEBSOCKET_PING, 15000).
 
 init(Req, State) ->
   IsXMPPClient = case cowboy_req:parse_header(<<"sec-websocket-protocol">>, Req) of
@@ -81,6 +82,7 @@ websocket_handle({text, Frame}, State) ->
   #xmlel{name = Name, attrs = Attrs}  =  X1,
   case Name of
     <<"open">> ->
+      erlang:start_timer(?WEBSOCKET_PING, self(), <<>>),
       {_,Server} = fxml:get_attr(<<"to">>, Attrs),
       if
         State#session.connstep == 0 ->
@@ -119,11 +121,16 @@ websocket_handle({text, Frame}, State) ->
       tcp_send(Frame, State#session.tcpsocket),
       {ok,State,hibernate}
   end;
+websocket_handle(pong, State) ->
+  {ok, State, hibernate};
 websocket_handle({ping, Payload}, State) ->
   {reply, {pong, Payload}, State, hibernate};
 websocket_handle(_Frame, State) ->
   {ok, State, hibernate}.
 
+websocket_info({timeout, _Ref, _Msg}, State) ->
+  erlang:start_timer(?WEBSOCKET_PING, self(), <<>>),
+  {reply, {ping, <<>>}, State};
 websocket_info({reply, fromxmppsrv, Packet}, State) ->
   {reply, {text, Packet}, State,hibernate};
 websocket_info({tcp, Socket, Packet}, State) ->
