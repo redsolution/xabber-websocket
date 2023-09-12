@@ -10,6 +10,10 @@
 
 -record(session,
 {
+  src_ip,
+  src_port,
+  dst_ip,
+  dst_port,
   connstep = 0,
   xmppserver,
   tcpsocket,
@@ -37,6 +41,7 @@
 -define(STREAM_CLOSE, <<"</stream:stream>">>).
 -define(WS_TIMEOUT, 60000).
 -define(WEBSOCKET_PING, 15000).
+-define(NS_WS_PROXY,  <<"urn:xabber:ws:proxy">>).
 
 init(Req, State) ->
   IsXMPPClient = case cowboy_req:parse_header(<<"sec-websocket-protocol">>, Req) of
@@ -48,7 +53,10 @@ init(Req, State) ->
   case IsXMPPClient of
     true ->
       Req2 = cowboy_req:set_resp_header(<<"sec-websocket-protocol">>, <<"xmpp">>, Req),
-      {cowboy_websocket, Req2, State,#{idle_timeout => application:get_env(xabber_ws, ws_timeout, ?WS_TIMEOUT)}};
+      {IP, Port} = cowboy_req:peer(Req),
+      NewState = #session{src_ip = IP, src_port = Port},
+      {cowboy_websocket, Req2, NewState,
+        #{idle_timeout => application:get_env(xabber_ws, ws_timeout, ?WS_TIMEOUT)}};
      _ ->
        Req2 = cowboy_req:reply(400, #{<<"content-type">> => <<"text/plain">>},
          <<"unsupported WebSocket protocol">>, Req),
@@ -56,7 +64,8 @@ init(Req, State) ->
   end.
 
 
-terminate(_Arg0, _Arg1, State) when is_record(State, session)->
+terminate(Arg0, Arg1, State) when is_record(State, session)->
+  lager:debug("Websocket terminated: ~p ~p ~p",[Arg0, Arg1, State]),
   case State#session.tcpsocket of
     undefined -> undefined;
     _ ->
@@ -69,13 +78,13 @@ terminate(_Arg0, _Arg1, State) when is_record(State, session)->
       fxml_stream:close(State#session.xmlstream)
   end,
   ok;
-terminate(_Arg0, _Arg1, _State) ->
+terminate(Arg0, Arg1, State) ->
+  lager:debug("Websocket terminated: ~p ~p ~p",[Arg0, Arg1, State]),
   ok.
 
 
-websocket_init(_State) ->
-  NewState = #session{},
-  {ok, NewState}.
+websocket_init(State) ->
+  {ok, State}.
 
 websocket_handle({text, Frame}, State) ->
   X1=fxml_stream:parse_element(Frame),
@@ -89,10 +98,12 @@ websocket_handle({text, Frame}, State) ->
           case check_server(Server) of
             <<"allow">> ->
               case init_session_to_xmpp_server(Server) of
-                {ok,connected, Socket} ->
+                {ok,connected, {Socket, IP, Port}} ->
                   tcp_send(?STREAM_START(Server), Socket),
                   NewStream = fxml_stream:new(self()),
-                  NewState = State#session{connstep = 1, xmppserver = Server, tcpsocket = Socket, xmlstream = NewStream},
+                  NewState = State#session{dst_ip = IP, dst_port = Port,
+                    connstep = 1, xmppserver = Server, tcpsocket = Socket,
+                    xmlstream = NewStream},
                   {ok,NewState,hibernate};
                 {err, Source, Why} ->
                   forward_connection_error_to_ws(Source, Why),
@@ -179,9 +190,16 @@ websocket_info({'$gen_event', XMLStreamEl}, State) ->
     {xmlstreamelement, #xmlel{name=Name} = XMLel} ->
       XMLel2 = case Name of
         <<"stream:features">> ->
+          case fxml:get_subtag(XMLel, <<"proxy">>) of
+            #xmlel{attrs = [{<<"xmlns">>, ?NS_WS_PROXY}]} ->
+              send_proxy_iq(State);
+            _ ->
+              ok
+          end,
           case fxml:get_subtag(XMLel, <<"starttls">>) of
-            {xmlel,<<"starttls">>,_,_} ->
-              tcp_send(<<"<starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>">>, State#session.tcpsocket),
+            #xmlel{name = <<"starttls">>} ->
+              tcp_send(<<"<starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>">>,
+                State#session.tcpsocket),
               skip;
             _ ->
               fxml:replace_tag_attr(<<"xmlns:stream">>, ?NS_STREAM, XMLel)
@@ -201,7 +219,8 @@ websocket_info({'$gen_event', XMLStreamEl}, State) ->
       end,
       {xmlstreamelement , XMLel2};
     {xmlstreamend, _} ->
-      {xmlstreamelement, #xmlel{name = <<"close">>,  attrs = [{<<"xmlns">>, <<"urn:ietf:params:xml:ns:xmpp-framing">>}]}};
+      {xmlstreamelement, #xmlel{name = <<"close">>,
+        attrs = [{<<"xmlns">>, <<"urn:ietf:params:xml:ns:xmpp-framing">>}]}};
     _ ->
       XMLStreamEl
   end,
@@ -224,8 +243,9 @@ init_session_to_xmpp_server(Server) ->
     {ok, AddrPortList} ->
       case  tcp_connect(AddrPortList, []) of
         {ok, Address, Port, Socket} ->
-          lager:info("tcp_socket:~p Connected to  ~s (~s:~p)",[Socket, Server, inet_parse:ntoa(Address), Port ]),
-          {ok,connected, Socket};
+          lager:info("tcp_socket:~p Connected to  ~s (~s:~p)",
+            [Socket, Server, inet_parse:ntoa(Address), Port]),
+          {ok,connected, {Socket, Address, Port}};
         {error, Why} ->
           lager:error("ERROR: Can not connect to ~s~p: ~p ",[Server,
             [inet_parse:ntoa(A)++":"++integer_to_list(P) || {A,P} <- AddrPortList],Why]),
@@ -283,6 +303,16 @@ forward_connection_error_to_ws(_Source, Why) ->
   self() ! {reply, fromxmppsrv, ?WS_CLOSE},
   self() ! {ws, stop, Why}.
 
+
+send_proxy_iq(#session{connstep = 1, src_ip = SrcIP, src_port = SrcPort,
+  dst_ip = DstIP, dst_port = DstPort, tcpsocket = Socket}) ->
+  IQ = iolist_to_binary(io_lib:format(
+    "<iq type='set' id='proxy1'>
+       <proxy xmlns='~s' src_ip='~s' src_port='~p' dst_ip='~s' dst_port='~p' />
+    </iq>",
+    [?NS_WS_PROXY, inet:ntoa(SrcIP), SrcPort, inet:ntoa(DstIP), DstPort])),
+  tcp_send(IQ, Socket);
+send_proxy_iq(_) -> ok.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%% Access rules                        %%
