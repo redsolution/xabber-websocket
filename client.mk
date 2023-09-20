@@ -4,7 +4,7 @@ DEPS_DIR ?= $(CURDIR)/deps
 C_VERSION ?= develop
 
 client:
-	@echo -n "Getting Xabber Web client ..."
+	@echo "Getting Xabber Web client ..."
 	@if [ ! -d "$(DEPS_DIR)/xabber_web/.git" ]; then \
 		mkdir -p $(DEPS_DIR)/xabber_web ;\
 		cd $(DEPS_DIR)/xabber_web ;\
@@ -20,5 +20,5 @@ client:
 	@cp -r $(DEPS_DIR)/xabber_web/manifest.json priv/client/ && echo -n "."
 	@cp -r $(DEPS_DIR)/xabber_web/background-images.xml priv/client/ && echo -n "."
 	@cp -r $(DEPS_DIR)/xabber_web/background-patterns.xml priv/client/ && echo -n "."
-	@sed "s/CONNECTION_URL: ''/CONNECTION_URL: (location.protocol == 'https:' ? 'wss:' : 'ws:')+'\/\/'+location.host+'\/websocket'/g" $(DEPS_DIR)/xabber_web/example_index.html  > priv/client/index.html
+	@sed "s/CONNECTION_URL: ''/CONNECTION_URL: (location.protocol == 'https:' ? 'wss:' : 'ws:')+'\/\/'+location.host+'\/websocket',DISABLE_LOOKUP_WS: true/g" $(DEPS_DIR)/xabber_web/example_index.html  > priv/client/index.html
 	@echo ". done."

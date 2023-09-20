@@ -42,6 +42,7 @@
 -define(WS_TIMEOUT, 60000).
 -define(WEBSOCKET_PING, 15000).
 -define(NS_WS_PROXY,  <<"urn:xabber:ws:proxy">>).
+-define('id-on-xmppAddr', {1,3,6,1,5,5,7,8,5} ).
 
 init(Req, State) ->
   IsXMPPClient = case cowboy_req:parse_header(<<"sec-websocket-protocol">>, Req) of
@@ -84,6 +85,7 @@ terminate(Arg0, Arg1, State) ->
 
 
 websocket_init(State) ->
+  erlang:start_timer(?WEBSOCKET_PING, self(), <<>>),
   {ok, State}.
 
 websocket_handle({text, Frame}, State) ->
@@ -91,7 +93,6 @@ websocket_handle({text, Frame}, State) ->
   #xmlel{name = Name, attrs = Attrs}  =  X1,
   case Name of
     <<"open">> ->
-      erlang:start_timer(?WEBSOCKET_PING, self(), <<>>),
       {_,Server} = fxml:get_attr(<<"to">>, Attrs),
       if
         State#session.connstep == 0 ->
@@ -161,7 +162,7 @@ websocket_info({ssl_closed, Socket}, State) ->
   lager:info("ssl_socket: ~p connection closed",[Socket]),
   {stop, State};
 websocket_info({start_tls}, State) ->
-  case tcp_upgrade_to_tls(State#session.tcpsocket) of
+  case tcp_upgrade_to_tls(State#session.tcpsocket, State#session.xmppserver) of
     {ok, SSLSocket}->
       fxml_stream:close(State#session.xmlstream),
       NewStream = fxml_stream:new(self()),
@@ -169,9 +170,10 @@ websocket_info({start_tls}, State) ->
       tcp_send(?STREAM_START(Server),SSLSocket),
       NewState = State#session{connstep = 2, tcpsocket = SSLSocket, xmlstream = NewStream},
       {ok, NewState, hibernate};
-    {err, _Why} ->
+    {err, Why} ->
+      forward_connection_error_to_ws(ssl, Why),
       inet:close(State#session.tcpsocket),
-      {stop, State}
+      {ok, State, hibernate}
   end;
 websocket_info({ws,stop, Why}, State) ->
   lager:debug("web_socket closed: ~p",[Why]),
@@ -267,14 +269,22 @@ tcp_connect([{Address, Port} | AddrPortList ], _Err) ->
       tcp_connect(AddrPortList, Why)
   end.
 
-tcp_upgrade_to_tls(Socket) ->
-  case ssl:connect(Socket, []) of
+tcp_upgrade_to_tls(Socket, XMPPDomain) ->
+  Opts =[
+    {verify,verify_peer},
+    {cacertfile, ca_file_path()},
+    {server_name_indication, disable}
+  ],
+  case ssl:connect(Socket, Opts) of
     {ok, SSLSocket} ->
-      lager:info("tcp_socket ~p upgrade to TLS ~p~n", [Socket,SSLSocket]),
-      {ok, SSLSocket};
+      lager:info("tcp_socket ~p upgrade to TLS ~p~n", [Socket, SSLSocket]),
+      case check_domain(SSLSocket, XMPPDomain) of
+        ok -> {ok, SSLSocket};
+        Err -> Err
+      end;
     {error, Why} ->
       lager:error("ERROR TCP socket not upgrade to TLS ~p~n",[Why]),
-      {err, Why}
+      {err, 'cert-authority-invalid'}
   end.
 
 tcp_send(Packet, Socket) ->
@@ -449,4 +459,41 @@ to_addr_port_list(#hostent{h_addr_list = AddrList}, Port) ->
     [] -> {error, nxdomain};
     _ -> {ok, AddrPortList}
   end.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% SSl Certificate                     %%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+ca_file_path()->
+  Path = application:get_env(xabber_ws, ca_file, ""),
+  case filelib:is_file(Path) of
+    true -> Path;
+    _ -> filename:join([code:priv_dir(xabber_ws), "ssl/certs/cacerts.pem"])
+  end.
+
+check_domain(SSLSocket, Domain)->
+  case ssl:peercert(SSLSocket) of
+    {ok, DerCert} ->
+      Cert = public_key:pkix_decode_cert(DerCert, otp),
+      Encoded = public_key:der_encode('DisplayText', {utf8String, Domain}),
+      XmppAddr = {otherName,{'AnotherName',?'id-on-xmppAddr', Encoded}},
+      CheckDomain = public_key:pkix_verify_hostname(Cert,
+        [{dns_id, Domain}, XmppAddr], [{match_fun, fun match_fun/2}]),
+      case CheckDomain of
+        true -> ok;
+        _ ->
+          lager:error("ERROR: invalid certificate for domain: ~p~n",[Domain]),
+          {err, 'cert-authority-invalid'}
+      end;
+    {error, Why} ->
+      {err, Why}
+  end.
+
+match_fun({dns_id, Domain}, {dNSName, Domain}) ->
+  true;
+match_fun({otherName,{'AnotherName',?'id-on-xmppAddr', Value}},
+    {otherName,{'AnotherName',?'id-on-xmppAddr', Value}}) ->
+  true;
+match_fun(__, _)->
+  default.
 

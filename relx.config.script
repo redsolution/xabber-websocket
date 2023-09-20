@@ -1,0 +1,16 @@
+AddLibs = fun AddLibs(Cfg) ->
+  OldCrypto = "/lib/x86_64-linux-gnu/libcrypto.so.1.0.0",
+  case filelib:is_file(OldCrypto) of
+    true ->
+      Overlays = case lists:keyfind(overlay, 1, Cfg) of
+                   {overlay, List} -> List;
+                   _ -> []
+                 end,
+      Overlays1 = Overlays ++
+        [{copy, OldCrypto, "erts-{{release_erts_version}}/lib/libcrypto.so.1.0.0"}],
+      lists:keystore(overlay, 1, Cfg, {overlay, Overlays1});
+    _ -> Cfg
+  end end,
+
+AddLibs(CONFIG).
+
