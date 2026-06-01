@@ -1,16 +1,43 @@
-AddLibs = fun AddLibs(Cfg) ->
-  OldCrypto = "/lib/x86_64-linux-gnu/libcrypto.so.1.0.0",
-  case filelib:is_file(OldCrypto) of
-    true ->
-      Overlays = case lists:keyfind(overlay, 1, Cfg) of
-                   {overlay, List} -> List;
-                   _ -> []
-                 end,
-      Overlays1 = Overlays ++
-        [{copy, OldCrypto, "erts-{{release_erts_version}}/lib/libcrypto.so.1.0.0"}],
-      lists:keystore(overlay, 1, Cfg, {overlay, Overlays1});
-    _ -> Cfg
-  end end,
+AppendOverlay = fun(Cfg, Entries) ->
+  Overlays = case lists:keyfind(overlay, 1, Cfg) of
+               {overlay, List} -> List;
+               _ -> []
+             end,
+  lists:keystore(overlay, 1, Cfg, {overlay, Overlays ++ Entries})
+end,
 
-AddLibs(CONFIG).
+CryptoPrivDir = code:priv_dir(crypto),
+CryptoLibDir = filename:join(CryptoPrivDir, "lib"),
+CryptoNifs = filelib:wildcard(filename:join(CryptoLibDir, "*.so")),
 
+FindLinkedOpenSslLibs = fun(NifPath) ->
+  Lines = string:tokens(os:cmd("ldd " ++ NifPath), "\n"),
+  lists:filtermap(
+    fun(Line) ->
+      case re:run(Line, "(lib(?:crypto|ssl)\\.so\\.[^ ]+) => ([^ ]+)",
+                  [{capture, [1, 2], list}]) of
+        {match, [LibName, LibPath]} ->
+          case filelib:is_regular(LibPath) of
+            true -> {true, {LibName, LibPath}};
+            false -> false
+          end;
+        nomatch ->
+          false
+      end
+    end,
+    Lines)
+end,
+
+OpenSslLibs = lists:ukeysort(
+  1,
+  lists:append([FindLinkedOpenSslLibs(NifPath) || NifPath <- CryptoNifs])),
+
+CopyEntries = [
+  {copy, LibPath, filename:join("erts-{{release_erts_version}}/lib", LibName)}
+  || {LibName, LibPath} <- OpenSslLibs
+],
+
+case CopyEntries of
+  [] -> CONFIG;
+  _ -> AppendOverlay(CONFIG, CopyEntries)
+end.

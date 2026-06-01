@@ -1,5 +1,6 @@
 -module(ws_handler).
 -include_lib("kernel/include/inet.hrl").
+-include_lib("kernel/include/logger.hrl").
 
 -record(xmlel,
 {
@@ -66,7 +67,7 @@ init(Req, State) ->
 
 
 terminate(Arg0, Arg1, State) when is_record(State, session)->
-  lager:debug("Websocket terminated: ~p ~p ~p",[Arg0, Arg1, State]),
+  ?LOG_DEBUG("Websocket terminated: ~p ~p ~p",[Arg0, Arg1, State]),
   case State#session.tcpsocket of
     undefined -> undefined;
     _ ->
@@ -80,7 +81,7 @@ terminate(Arg0, Arg1, State) when is_record(State, session)->
   end,
   ok;
 terminate(Arg0, Arg1, State) ->
-  lager:debug("Websocket terminated: ~p ~p ~p",[Arg0, Arg1, State]),
+  ?LOG_DEBUG("Websocket terminated: ~p ~p ~p",[Arg0, Arg1, State]),
   ok.
 
 
@@ -113,7 +114,7 @@ websocket_handle({text, Frame}, State) ->
                   {stop, State}
               end;
             _ ->
-              lager:warning("accessrules: Not allowed domain: ~p", [Server]),
+              ?LOG_WARNING("accessrules: Not allowed domain: ~p", [Server]),
               forward_connection_error_to_ws(accessrules, 'not-allowed-domain'),
               {ok,State,hibernate}
           end;
@@ -156,10 +157,10 @@ websocket_info({ssl, Socket, Packet}, State) ->
   NewState = State#session{xmlstream = Stream},
   {ok, NewState, hibernate};
 websocket_info({tcp_closed, Socket}, State) ->
-  lager:info("tcp_socket: ~p connection closed",[Socket]),
+  ?LOG_INFO("tcp_socket: ~p connection closed",[Socket]),
   {stop, State};
 websocket_info({ssl_closed, Socket}, State) ->
-  lager:info("ssl_socket: ~p connection closed",[Socket]),
+  ?LOG_INFO("ssl_socket: ~p connection closed",[Socket]),
   {stop, State};
 websocket_info({start_tls}, State) ->
   case tcp_upgrade_to_tls(State#session.tcpsocket, State#session.xmppserver) of
@@ -176,7 +177,7 @@ websocket_info({start_tls}, State) ->
       {ok, State, hibernate}
   end;
 websocket_info({ws,stop, Why}, State) ->
-  lager:debug("web_socket closed: ~p",[Why]),
+  ?LOG_DEBUG("web_socket closed: ~p",[Why]),
   {stop, State};
 websocket_info({'$gen_event', XMLStreamEl}, State) ->
   XMLStreamEl2 = case XMLStreamEl of
@@ -236,7 +237,7 @@ websocket_info({'$gen_event', XMLStreamEl}, State) ->
   end,
   {ok, State, hibernate};
 websocket_info(Info, State) ->
-  lager:debug("web_socket closed ~p", [Info]),
+  ?LOG_DEBUG("web_socket closed ~p", [Info]),
   {stop, State}.
 
 
@@ -245,16 +246,16 @@ init_session_to_xmpp_server(Server) ->
     {ok, AddrPortList} ->
       case  tcp_connect(AddrPortList, []) of
         {ok, Address, Port, Socket} ->
-          lager:info("tcp_socket:~p Connected to  ~s (~s:~p)",
+          ?LOG_INFO("tcp_socket:~p Connected to  ~s (~s:~p)",
             [Socket, Server, inet_parse:ntoa(Address), Port]),
           {ok,connected, {Socket, Address, Port}};
         {error, Why} ->
-          lager:error("ERROR: Can not connect to ~s~p: ~p ",[Server,
+          ?LOG_ERROR("ERROR: Can not connect to ~s~p: ~p ",[Server,
             [inet_parse:ntoa(A)++":"++integer_to_list(P) || {A,P} <- AddrPortList],Why]),
           {err,tcp_connect, Why}
       end;
     {error, Why} ->
-      lager:error("ERROR: Can not resolve domain name ~p : ~p",[Server,Why]),
+      ?LOG_ERROR("ERROR: Can not resolve domain name ~p : ~p",[Server,Why]),
       {err, dns, 'dns-error'}
   end.
 
@@ -271,19 +272,19 @@ tcp_connect([{Address, Port} | AddrPortList ], _Err) ->
 
 tcp_upgrade_to_tls(Socket, XMPPDomain) ->
   Opts =[
+    get_ca_option(),
     {verify,verify_peer},
-    {cacertfile, ca_file_path()},
     {server_name_indication, disable}
   ],
   case ssl:connect(Socket, Opts) of
     {ok, SSLSocket} ->
-      lager:info("tcp_socket ~p upgrade to TLS ~p~n", [Socket, SSLSocket]),
+      ?LOG_INFO("tcp_socket ~p upgrade to TLS ~p~n", [Socket, SSLSocket]),
       case check_domain(SSLSocket, XMPPDomain) of
         ok -> {ok, SSLSocket};
         Err -> Err
       end;
     {error, Why} ->
-      lager:error("ERROR TCP socket not upgrade to TLS ~p~n",[Why]),
+      ?LOG_ERROR("ERROR TCP socket not upgrade to TLS ~p~n",[Why]),
       {err, 'cert-authority-invalid'}
   end.
 
@@ -354,7 +355,7 @@ check_access(Server) ->
                     [W1, W2] ->
                       {true, {W1, W2}};
                     _ ->
-                      lager:error("accessrules: Wrong record in accessrules: ~s",[X]),
+                      ?LOG_ERROR("accessrules: Wrong record in accessrules: ~s",[X]),
                       false
                     end
         end,
@@ -364,7 +365,7 @@ check_access(Server) ->
         _ -> Def_rule
       end;
     {error, Reason} ->
-      lager:error("accessrules: File read error: ~p",[Reason]),
+      ?LOG_ERROR("accessrules: File read error: ~p",[Reason]),
       Def_rule
   end.
 
@@ -464,11 +465,19 @@ to_addr_port_list(#hostent{h_addr_list = AddrList}, Port) ->
 %%% SSl Certificate                     %%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-ca_file_path()->
-  Path = application:get_env(xabber_ws, ca_file, ""),
-  case filelib:is_file(Path) of
-    true -> Path;
-    _ -> filename:join([code:priv_dir(xabber_ws), "ssl/certs/cacerts.pem"])
+get_ca_option()->
+  case erlang:function_exported(public_key, cacerts_get, 0) of
+    true ->
+      {cacerts, public_key:cacerts_get()};
+    _ ->
+      Path = application:get_env(xabber_ws, ca_file, ""),
+      Path1 = case filelib:is_file(Path) of
+                true -> Path;
+                _ ->
+                  filename:join([code:priv_dir(xabber_ws),
+                    "ssl/certs/cacerts.pem"])
+              end,
+      {cacertfile, Path1}
   end.
 
 check_domain(SSLSocket, Domain)->
@@ -482,7 +491,7 @@ check_domain(SSLSocket, Domain)->
       case CheckDomain of
         true -> ok;
         _ ->
-          lager:error("ERROR: invalid certificate for domain: ~p~n",[Domain]),
+          ?LOG_ERROR("ERROR: invalid certificate for domain: ~p~n",[Domain]),
           {err, 'cert-authority-invalid'}
       end;
     {error, Why} ->

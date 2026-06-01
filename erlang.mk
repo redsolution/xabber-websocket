@@ -2864,7 +2864,7 @@ pkg_relx_description = Sane, simple release creation for Erlang
 pkg_relx_homepage = https://github.com/erlware/relx
 pkg_relx_fetch = git
 pkg_relx_repo = https://github.com/erlware/relx
-pkg_relx_commit = main
+pkg_relx_commit = v4.7.0
 
 PACKAGES += resource_discovery
 pkg_resource_discovery_name = resource_discovery
