@@ -2864,7 +2864,7 @@ pkg_relx_description = Sane, simple release creation for Erlang
 pkg_relx_homepage = https://github.com/erlware/relx
 pkg_relx_fetch = git
 pkg_relx_repo = https://github.com/erlware/relx
-pkg_relx_commit = v4.7.0
+pkg_relx_commit = v4.10.0
 
 PACKAGES += resource_discovery
 pkg_resource_discovery_name = resource_discovery
@@ -3565,7 +3565,7 @@ REBAR_DEPS_DIR = $(DEPS_DIR)
 export REBAR_DEPS_DIR
 
 REBAR3_GIT ?= https://github.com/erlang/rebar3
-REBAR3_COMMIT ?= 3f563feaf1091a1980241adefa83a32dd2eebf7c # 3.20.0
+REBAR3_COMMIT ?= bde4b54248d16280b2c70a244aca3bb7566e2033 # 3.23.0
 
 CACHE_DEPS ?= 0
 
@@ -4665,7 +4665,6 @@ define makedep.erl
 	end,
 	MakeDepend = fun
 		(F, Fd, Mod, StartLocation) ->
-			{ok, Filename} = file:pid2name(Fd),
 			case io:parse_erl_form(Fd, undefined, StartLocation) of
 				{ok, AbsData, EndLocation} ->
 					case AbsData of
