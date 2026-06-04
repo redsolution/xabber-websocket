@@ -1,6 +1,6 @@
 PROJECT = xabber_ws
 PROJECT_DESCRIPTION = Xabber Websocket server
-PROJECT_VERSION = 0.4.0
+PROJECT_VERSION = 1.0.0
 
 DEPS = cowlib cowboy p1_utils fast_xml
 dep_cowlib_commit = 2.12.1
