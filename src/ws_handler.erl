@@ -36,6 +36,7 @@
 
 
 -define(NS_STREAM, <<"http://etherx.jabber.org/streams">>).
+-define(NS_XMPP_FRAMING, <<"urn:ietf:params:xml:ns:xmpp-framing">>).
 -define(WS_CLOSE, <<"<close xmlns='urn:ietf:params:xml:ns:xmpp-framing'/>">>).
 -define(STREAM_START(Server), <<"<stream:stream xmlns='jabber:client' to='",Server/binary,
   "' version='1.0' xmlns:stream='http://etherx.jabber.org/streams' xml:lang='en'>">>).
@@ -71,7 +72,7 @@ terminate(Arg0, Arg1, State) when is_record(State, session)->
   case State#session.tcpsocket of
     undefined -> undefined;
     _ ->
-      tcp_send(?STREAM_CLOSE, State#session.tcpsocket),
+      do_tcp_send(?STREAM_CLOSE, State#session.tcpsocket),
       tcp_close(State#session.tcpsocket)
   end,
   case State#session.xmlstream of
@@ -90,49 +91,23 @@ websocket_init(State) ->
   {ok, State}.
 
 websocket_handle({text, Frame}, State) ->
-  X1=fxml_stream:parse_element(Frame),
-  #xmlel{name = Name, attrs = Attrs}  =  X1,
-  case Name of
-    <<"open">> ->
-      {_,Server} = fxml:get_attr(<<"to">>, Attrs),
-      if
-        State#session.connstep == 0 ->
-          case check_server(Server) of
-            <<"allow">> ->
-              case init_session_to_xmpp_server(Server) of
-                {ok,connected, {Socket, IP, Port}} ->
-                  tcp_send(?STREAM_START(Server), Socket),
-                  NewStream = fxml_stream:new(self()),
-                  NewState = State#session{dst_ip = IP, dst_port = Port,
-                    connstep = 1, xmppserver = Server, tcpsocket = Socket,
-                    xmlstream = NewStream},
-                  {ok,NewState,hibernate};
-                {err, Source, Why} ->
-                  forward_connection_error_to_ws(Source, Why),
-                  {ok,State,hibernate};
-                _ ->
-                  {stop, State}
-              end;
-            _ ->
-              ?LOG_WARNING("accessrules: Not allowed domain: ~p", [Server]),
-              forward_connection_error_to_ws(accessrules, 'not-allowed-domain'),
-              {ok,State,hibernate}
-          end;
-        true ->
-          fxml_stream:close(State#session.xmlstream),
-          NewStream = fxml_stream:new(self()),
-          Server = State#session.xmppserver,
-          tcp_send(?STREAM_START(Server),State#session.tcpsocket),
-          NewState = State#session{ xmlstream = NewStream},
-          {ok, NewState, hibernate}
-      end;
-    <<"close">> ->
-      tcp_send(?STREAM_CLOSE, State#session.tcpsocket),
-      tcp_close(State#session.tcpsocket),
-      {stop,State};
-    _ ->
-      tcp_send(Frame, State#session.tcpsocket),
-      {ok,State,hibernate}
+  case parse_ws_xml_frame(Frame, State) of
+    {ok, #xmlel{name = <<"open">>, attrs = Attrs}} ->
+      handle_open(Attrs, State);
+
+    {ok, #xmlel{name = <<"close">>}} ->
+      handle_close(State);
+
+    {ok, #xmlel{}} when State#session.connstep > 0 ->
+      send_to_tcp(Frame, State);
+
+    {ok, #xmlel{name = Name}} ->
+      ?LOG_WARNING("Unexpected websocket XML frame before open: ~p", [Name]),
+      close_ws_with_error('bad-format', State);
+
+    {error, Reason} ->
+      ?LOG_WARNING("Invalid websocket XML frame: ~p", [Reason]),
+      close_ws_with_error('bad-format', State)
   end;
 websocket_handle(pong, State) ->
   {ok, State, hibernate};
@@ -168,9 +143,8 @@ websocket_info({start_tls}, State) ->
       fxml_stream:close(State#session.xmlstream),
       NewStream = fxml_stream:new(self()),
       Server = State#session.xmppserver,
-      tcp_send(?STREAM_START(Server),SSLSocket),
       NewState = State#session{connstep = 2, tcpsocket = SSLSocket, xmlstream = NewStream},
-      {ok, NewState, hibernate};
+      send_to_tcp(?STREAM_START(Server), NewState);
     {err, Why} ->
       forward_connection_error_to_ws(ssl, Why),
       inet:close(State#session.tcpsocket),
@@ -201,8 +175,8 @@ websocket_info({'$gen_event', XMLStreamEl}, State) ->
           end,
           case fxml:get_subtag(XMLel, <<"starttls">>) of
             #xmlel{name = <<"starttls">>} ->
-              tcp_send(<<"<starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>">>,
-                State#session.tcpsocket),
+              _ = send_to_tcp(<<"<starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>">>,
+                State),
               skip;
             _ ->
               fxml:replace_tag_attr(<<"xmlns:stream">>, ?NS_STREAM, XMLel)
@@ -241,6 +215,81 @@ websocket_info(Info, State) ->
   {stop, State}.
 
 
+parse_ws_xml_frame(Frame, State) ->
+  try fxml_stream:parse_element(Frame) of
+    #xmlel{} = El ->
+      validate_ws_xml_frame(El, State);
+    {error, _} = Error ->
+      Error;
+    Other ->
+      {error, {unexpected_parse_result, Other}}
+  catch
+    Class:Reason ->
+      {error, {parse_crash, Class, Reason}}
+  end.
+
+validate_ws_xml_frame(#xmlel{name = <<"open">>, attrs = Attrs} = El, State) ->
+  case fxml:get_attr_s(<<"xmlns">>, Attrs) of
+    ?NS_XMPP_FRAMING when State#session.connstep == 0 ->
+      case fxml:get_attr(<<"to">>, Attrs) of
+        {value, Server} when byte_size(Server) > 0 -> {ok, El};
+        _ -> {error, missing_to}
+      end;
+    ?NS_XMPP_FRAMING ->
+      {ok, El};
+    OtherNS ->
+      {error, {bad_namespace, OtherNS}}
+  end;
+validate_ws_xml_frame(#xmlel{name = <<"close">>, attrs = Attrs} = El, _State) ->
+  case fxml:get_attr_s(<<"xmlns">>, Attrs) of
+    ?NS_XMPP_FRAMING ->
+      {ok, El};
+    OtherNS ->
+      {error, {bad_namespace, OtherNS}}
+  end;
+validate_ws_xml_frame(#xmlel{} = El, _State) ->
+  {ok, El}.
+
+handle_open(Attrs, #session{connstep = 0} = State) ->
+  {value, Server} = fxml:get_attr(<<"to">>, Attrs),
+  case check_server(Server) of
+    <<"allow">> ->
+      case init_session_to_xmpp_server(Server) of
+        {ok, connected, {Socket, IP, Port}} ->
+          NewStream = fxml_stream:new(self()),
+          NewState = State#session{
+            dst_ip = IP,
+            dst_port = Port,
+            connstep = 1,
+            xmppserver = Server,
+            tcpsocket = Socket,
+            xmlstream = NewStream
+          },
+          send_to_tcp(?STREAM_START(Server), NewState);
+        {err, Source, Why} ->
+          forward_connection_error_to_ws(Source, Why),
+          {ok, State, hibernate}
+      end;
+    _ ->
+      ?LOG_WARNING("accessrules: Not allowed domain: ~p", [Server]),
+      forward_connection_error_to_ws(accessrules, 'not-allowed-domain'),
+      {ok, State, hibernate}
+  end;
+handle_open(_Attrs, State) ->
+  fxml_stream:close(State#session.xmlstream),
+  NewStream = fxml_stream:new(self()),
+  Server = State#session.xmppserver,
+  NewState = State#session{xmlstream = NewStream},
+  send_to_tcp(?STREAM_START(Server), NewState).
+
+handle_close(State = #session{tcpsocket = undefined}) ->
+  {stop, State};
+handle_close(State) ->
+  do_tcp_send(?STREAM_CLOSE, State#session.tcpsocket),
+  tcp_close(State#session.tcpsocket),
+  {stop, State}.
+
+
 init_session_to_xmpp_server(Server) ->
   case dns_resolve(binary_to_list(Server)) of
     {ok, AddrPortList} ->
@@ -274,7 +323,7 @@ tcp_upgrade_to_tls(Socket, XMPPDomain) ->
   Opts =[
     get_ca_option(),
     {verify,verify_peer},
-    {server_name_indication, disable}
+    {server_name_indication, binary_to_list(XMPPDomain)}
   ],
   case ssl:connect(Socket, Opts) of
     {ok, SSLSocket} ->
@@ -288,12 +337,27 @@ tcp_upgrade_to_tls(Socket, XMPPDomain) ->
       {err, 'cert-authority-invalid'}
   end.
 
-tcp_send(Packet, Socket) ->
-  case Socket of
-    {sslsocket,_,_} ->
-      catch ssl:send(Socket,Packet);
-    _ ->
-      catch gen_tcp:send(Socket,Packet)
+send_to_tcp(Packet, State) ->
+  case do_tcp_send(Packet, State#session.tcpsocket) of
+    ok ->
+      {ok, State, hibernate};
+    {error, Reason} ->
+      ?LOG_WARNING("Failed to send websocket frame to XMPP server: ~p", [Reason]),
+      forward_connection_error_to_ws(tcp_send, 'remote-connection-failed'),
+      {ok, State, hibernate}
+  end.
+
+do_tcp_send(Packet, Socket) ->
+  try
+    case Socket of
+      {sslsocket, _, _} ->
+        ssl:send(Socket, Packet);
+      _ ->
+        gen_tcp:send(Socket, Packet)
+    end
+  catch
+    Class:Reason ->
+      {error, {Class, Reason}}
   end.
 
 
@@ -306,14 +370,23 @@ tcp_close(Socket) ->
   end.
 
 
+close_ws_with_error(Why, State) ->
+  forward_connection_error_to_ws(websocket, Why),
+  {ok, State, hibernate}.
+
+forward_connection_error_to_ws(_Source, Why) when is_atom(Why) ->
+  WhyBin = atom_to_binary(Why, utf8),
+  forward_connection_error_to_ws_bin(WhyBin);
 forward_connection_error_to_ws(_Source, Why) ->
-  WhyBin= erlang:atom_to_binary(Why, utf8),
+  ?LOG_WARNING("Websocket close reason: ~p", [Why]),
+  forward_connection_error_to_ws_bin(<<"bad-format">>).
+
+forward_connection_error_to_ws_bin(WhyBin) ->
   self() ! {reply, fromxmppsrv, <<"<stream:error xmlns:stream='http://etherx.jabber.org/streams'><",
-    WhyBin/binary," xmlns='urn:ietf:params:xml:ns:xmpp-streams'/>",
+    WhyBin/binary, " xmlns='urn:ietf:params:xml:ns:xmpp-streams'/>",
     "</stream:error>">>},
   self() ! {reply, fromxmppsrv, ?WS_CLOSE},
-  self() ! {ws, stop, Why}.
-
+  self() ! {ws, stop, WhyBin}.
 
 send_proxy_iq(#session{connstep = 1, src_ip = SrcIP, src_port = SrcPort,
   dst_ip = DstIP, dst_port = DstPort, tcpsocket = Socket}) ->
@@ -322,7 +395,8 @@ send_proxy_iq(#session{connstep = 1, src_ip = SrcIP, src_port = SrcPort,
        <proxy xmlns='~s' src_ip='~s' src_port='~p' dst_ip='~s' dst_port='~p' />
     </iq>",
     [?NS_WS_PROXY, inet:ntoa(SrcIP), SrcPort, inet:ntoa(DstIP), DstPort])),
-  tcp_send(IQ, Socket);
+  _ = do_tcp_send(IQ, Socket),
+  ok;
 send_proxy_iq(_) -> ok.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -360,7 +434,7 @@ check_access(Server) ->
                     end
         end,
         binary:split(Binary2,<<"\n">>,[global])),
-      case lists:keyfind(Server, 2, ACL) of
+      case lists:keyfind(string:lowercase(Server), 2, ACL) of
         {Rule, _ } -> Rule;
         _ -> Def_rule
       end;
@@ -439,14 +513,24 @@ a_lookup(Host, Port, Timeout, Retries) ->
 
 -spec to_host_port_list(inet:hostent()) -> {ok, [host_port()]} | {error, nxdomain}.
 to_host_port_list(#hostent{h_addr_list = AddrList}) ->
-  AddrList2 = lists:flatmap(
-    fun({Priority, Weight, Port, Host}) ->
-      [{Priority + 65536 - Weight + rand:uniform(), Host, Port}];
+  Weighted = lists:flatmap(
+    fun({Priority, Weight, Port, Host}) when is_integer(Priority), is_integer(Weight) ->
+      Key =
+        case Weight > 0 of
+          true ->
+            -math:log(rand:uniform()) / Weight;
+          false ->
+            1.0e308 + rand:uniform()
+        end,
+      [{Priority, Key, Host, Port}];
       (_) ->
         []
-    end, AddrList),
+    end,
+    AddrList),
+
   HostPortList = [{Host, Port}
-    || {_, Host, Port} <- lists:usort(AddrList2)],
+    || {_Priority, _Key, Host, Port} <- lists:sort(Weighted)],
+
   case HostPortList of
     [] -> {error, nxdomain};
     _ -> {ok, HostPortList}
@@ -505,4 +589,3 @@ match_fun({otherName,{'AnotherName',?'id-on-xmppAddr', Value}},
   true;
 match_fun(__, _)->
   default.
-
