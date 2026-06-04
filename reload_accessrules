@@ -1,0 +1,4 @@
+#!/bin/sh
+
+DIR="$(cd "$(dirname "$0")/.." && pwd)"
+exec "$DIR/bin/xabber_ws" eval 'acl:reload().'

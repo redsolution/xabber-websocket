@@ -413,36 +413,7 @@ check_server(Server) ->
   end.
 
 check_access(Server) ->
-  Def_rule = case application:get_env(xabber_ws, allow_all, true) of
-               true -> <<"allow">>;
-               _ -> <<"deny">>
-             end,
-  ACL_file_path = filename:join([code:root_dir(), "config", "accessrules"]),
-  case file:read_file(ACL_file_path) of
-    {ok,<<>>} -> Def_rule;
-    {ok, Binary} ->
-      {ok, MP} = re:compile("[#|%].*\n"),
-      Binary2 = re:replace(Binary,MP,"\n",[{return,binary},global]),
-      ACL = lists:filtermap(
-        fun(X) -> case string:lexemes(string:lowercase(X)," ") of
-                    [] -> false;
-                    [W1, W2] ->
-                      {true, {W1, W2}};
-                    _ ->
-                      ?LOG_ERROR("accessrules: Wrong record in accessrules: ~s",[X]),
-                      false
-                    end
-        end,
-        binary:split(Binary2,<<"\n">>,[global])),
-      case lists:keyfind(string:lowercase(Server), 2, ACL) of
-        {Rule, _ } -> Rule;
-        _ -> Def_rule
-      end;
-    {error, Reason} ->
-      ?LOG_ERROR("accessrules: File read error: ~p",[Reason]),
-      Def_rule
-  end.
-
+  acl:check(Server).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%% DNS lookup.                         %%
