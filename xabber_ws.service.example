@@ -1,0 +1,18 @@
+[Unit]
+Description=Xabber WebSocket Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=xabber_websocket_user
+Group=xabber_websocket_user
+WorkingDirectory=/opt/xabber_websocket_dir
+ExecStart=/opt/xabber_websocket_dir/bin/xabber_ws foreground
+ExecStop=/opt/xabber_websocket_dir/bin/xabber_ws stop
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

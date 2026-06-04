@@ -2,7 +2,7 @@
 
 Xabber WebSocket is a WebSocket XMPP client interface. It is a standalone WebSocket connection manager
 that enables a web application like https://github.com/redsolution/xabber-web[Xabber for Web] to communicate
-with multiple different XMPP servers
+with multiple different XMPP servers.
 
 === Build and run
 You need GNU `make` and `git` in your PATH.
@@ -10,16 +10,16 @@ You need GNU `make` and `git` in your PATH.
 To build and run the app, use the following command:
 
 [source,bash]
-$ git clone https://github.com/redsolution/xabber-websocket.git
-$ cd xabber-websocket
+$ git clone https://github.com/redsolution/xabber-websocket.git xabber_ws
+$ cd xabber_ws
 $ make run
 
-Then point your xmpp client to `ws://yourserver:8080/websocket`
-or you can use the embedded Xabber Web client on `http://yourserver:8080/client`
+Then point your XMPP client to `ws://youraddress:8080/websocket`
+or you can use the embedded Xabber Web client on `http://youraddress:8080/client`.
 
 === Install and run
-If `make` is successful, archive `xabber_ws-NN.tar.gz` with an application  will be created
-in the `_rel/xabber_ws/` directory
+If `make` succeeds, the `xabber_ws-NN.tar.gz` release archive will be created
+in the `_rel/xabber_ws/` directory.
 
 Copy the archive to your server and use the following command:
 
@@ -27,10 +27,34 @@ Copy the archive to your server and use the following command:
 $ mkdir xabber_ws
 $ tar -xvf xabber_ws-NN.tar.gz -C xabber_ws
 $ cd xabber_ws/bin
-$ ./xabber_ws start
+$ ./xabber_ws daemon
 
-Then point your xmpp client to `ws://yourserver:8080/websocket`
-or you can use the embedded Xabber Web client on `http://yourserver:8080/client`
+Then point your XMPP client to `ws://yourserver:8080/websocket`
+or you can use the embedded Xabber Web client on `http://yourserver:8080/client`.
+
+=== Access rules
+
+Xabber WebSocket can allow or deny connections based on the requested XMPP domain.
+The default action is controlled by the `allow_all` option in `config/xabber_ws.config`:
+`true` allows domains not listed in the rules file, and `false` denies them.
+
+Rules are read from the file configured by `accessrules_file` in `config/xabber_ws.config`.
+By default, this is `config/accessrules`.
+
+Each rule has two fields: action and XMPP domain.
+
+[source]
+allow example.org
+deny blocked.example.org
+
+The supported actions are `allow` and `deny`. Empty lines are ignored.
+The `#` and `%` characters start comments that continue to the end of the line.
+
+Access rules are cached in memory. After changing the rules file, reload the rules
+in the running server:
+
+[source,bash]
+$ ./bin/reload_accessrules
 
 === Online documentation
 

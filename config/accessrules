@@ -1,6 +1,7 @@
 ## Access rules
 ## Default action is set in xabber_ws.config. Set 'allow_all' parameter to true or false (restart required).
-## New rules take effect without restarting server.
+## After changing this file, reload rules in the running server:
+##   ./bin/reload_accessrules
 ## Rule examples:
 ##  rule      server(xmpp domain)
 ## -----------------------------
